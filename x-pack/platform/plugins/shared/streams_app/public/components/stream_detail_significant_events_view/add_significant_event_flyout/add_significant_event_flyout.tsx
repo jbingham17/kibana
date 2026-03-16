@@ -19,9 +19,8 @@ import {
   EuiTitle,
   useEuiTheme,
 } from '@elastic/eui';
-import { omit } from 'lodash';
 import { i18n } from '@kbn/i18n';
-import type { SignificantEventsQueriesGenerationTaskResult } from '@kbn/streams-schema';
+import type { OnboardingResult, TaskResult } from '@kbn/streams-schema';
 import { TaskStatus, type StreamQuery, type Streams } from '@kbn/streams-schema';
 import { streamQuerySchema } from '@kbn/streams-schema';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,19 +29,19 @@ import { v4 } from 'uuid';
 import useAsyncFn from 'react-use/lib/useAsyncFn';
 import { useBoolean } from '@kbn/react-hooks';
 import { useKibana } from '../../../hooks/use_kibana';
-import { useSignificantEventsApi } from '../../../hooks/use_significant_events_api';
+import { useOnboardingApi } from '../../../hooks/use_onboarding_api';
 import type { AIFeatures } from '../../../hooks/use_ai_features';
 import { GeneratedFlowForm } from './generated_flow_form/generated_flow_form';
 import { ManualFlowForm } from './manual_flow_form/manual_flow_form';
 import type { Flow, SaveData } from './types';
 import { defaultQuery } from './utils/default_query';
 import { StreamsAppSearchBar } from '../../streams_app_search_bar';
-import { validateQuery } from './common/validate_query';
+import { validateEsqlQuery } from './common/validate_query';
 import { useStreamsAppFetch } from '../../../hooks/use_streams_app_fetch';
 import { useTaskPolling } from '../../../hooks/use_task_polling';
 import { SignificantEventsGenerationPanel } from '../generation_panel';
 
-const defaultTask: SignificantEventsQueriesGenerationTaskResult = {
+const defaultTask: TaskResult<OnboardingResult> = {
   status: TaskStatus.NotStarted,
 };
 interface Props {
@@ -77,8 +76,13 @@ export function AddSignificantEventFlyout({
     });
   }, [data.dataViews, definition.stream.name]);
 
-  const { cancelGenerationTask, getGenerationTask, scheduleGenerationTask } =
-    useSignificantEventsApi({ name: definition.stream.name });
+  const { scheduleOnboardingTask, getOnboardingTaskStatus, cancelOnboardingTask } =
+    useOnboardingApi({
+      connectorId: aiFeatures?.genAiConnectors.selectedConnector,
+      saveQueries: false,
+    });
+
+  const streamName = definition.stream.name;
 
   const isEditMode = !!query?.id;
   const [selectedFlow, setSelectedFlow] = useState<Flow | undefined>(
@@ -91,23 +95,24 @@ export function AddSignificantEventFlyout({
 
   const [generatedQueries, setGeneratedQueries] = useState<StreamQuery[]>([]);
 
-  const [task, setTask] = useState<SignificantEventsQueriesGenerationTaskResult>(defaultTask);
+  const [task, setTask] = useState<TaskResult<OnboardingResult>>(defaultTask);
   const [isGettingTaskStatus, { on: gettingTaskStatus, off: stoppedGettingTaskStatus }] =
     useBoolean(false);
 
-  const [{ loading: isSchedulingGenerationTask }, doScheduleGenerationTask] =
-    useAsyncFn(scheduleGenerationTask);
+  const [{ loading: isSchedulingGenerationTask }, doScheduleOnboardingTask] = useAsyncFn(
+    scheduleOnboardingTask,
+    [scheduleOnboardingTask]
+  );
 
-  const scheduleTask = (connectorId: string) => {
+  const scheduleTask = () => {
     setTask(defaultTask);
-    doScheduleGenerationTask(connectorId).then(setTask);
+    doScheduleOnboardingTask(streamName).then(setTask);
   };
 
   const getTaskStatus = useCallback(() => {
     gettingTaskStatus();
-    getGenerationTask().then(setTask).finally(stoppedGettingTaskStatus);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stoppedGettingTaskStatus, gettingTaskStatus]);
+    getOnboardingTaskStatus(streamName).then(setTask).finally(stoppedGettingTaskStatus);
+  }, [stoppedGettingTaskStatus, gettingTaskStatus, streamName, getOnboardingTaskStatus]);
 
   useEffect(() => {
     // Skip initial status fetch when we are about to schedule a new generation on mount,
@@ -120,11 +125,21 @@ export function AddSignificantEventFlyout({
     getTaskStatus();
   }, [generateOnMount, getTaskStatus, initialFlow]);
 
+  const pollTask = useCallback(
+    () => getOnboardingTaskStatus(streamName),
+    [getOnboardingTaskStatus, streamName]
+  );
+
+  const cancelOnboarding = useCallback(
+    () => cancelOnboardingTask(streamName),
+    [cancelOnboardingTask, streamName]
+  );
+
   const { cancelTask, isCancellingTask } = useTaskPolling({
     task,
-    onPoll: getGenerationTask,
+    onPoll: pollTask,
     onRefresh: getTaskStatus,
-    onCancel: cancelGenerationTask,
+    onCancel: cancelOnboarding,
   });
 
   const isGenerating =
@@ -143,21 +158,17 @@ export function AddSignificantEventFlyout({
     const isNewlyCompleted =
       task?.status === TaskStatus.Completed && prevStatus !== TaskStatus.Completed;
     if (isNewlyCompleted) {
+      const queriesResult = task.queriesTaskResult;
+      const completedQueries =
+        queriesResult?.status === TaskStatus.Completed ? queriesResult.queries : [];
+
       setGeneratedQueries(
-        task.queries
-          .filter((nextQuery) => {
-            const validation = validateQuery({
-              title: nextQuery.title,
-              kql: { query: nextQuery.kql },
-            });
-            return validation.kql.isInvalid === false;
-          })
+        completedQueries
+          .filter((nextQuery) => validateEsqlQuery(nextQuery.esql.query).isInvalid === false)
           .map((nextQuery) => ({
             id: v4(),
-            kql: { query: nextQuery.kql },
             esql: nextQuery.esql,
             title: nextQuery.title,
-            feature: nextQuery.feature,
             severity_score: nextQuery.severity_score,
             evidence: nextQuery.evidence,
           }))
@@ -181,15 +192,14 @@ export function AddSignificantEventFlyout({
   }, [selectedFlow]);
 
   const generateQueries = () => {
-    const connectorId = aiFeatures?.genAiConnectors.selectedConnector;
-    if (!connectorId) {
+    if (!aiFeatures?.genAiConnectors.selectedConnector) {
       return;
     }
 
     setSelectedFlow('ai');
     setGeneratedQueries([]);
 
-    scheduleTask(connectorId);
+    scheduleTask();
   };
 
   useEffect(() => {
@@ -282,14 +292,10 @@ export function AddSignificantEventFlyout({
                       <EuiSpacer size="m" />
                       <ManualFlowForm
                         isSubmitting={isSubmitting}
-                        isEditMode={isEditMode}
                         setQuery={(next: StreamQuery) => setQueries([next])}
                         query={queries[0]}
-                        setCanSave={(next: boolean) => {
-                          setCanSave(next);
-                        }}
+                        setCanSave={setCanSave}
                         definition={definition.stream}
-                        dataViews={dataViewsFetch.value ?? []}
                       />
                     </>
                   )}
@@ -357,24 +363,14 @@ export function AddSignificantEventFlyout({
                         case 'manual':
                           onSave({
                             type: 'single',
-                            query: {
-                              ...queries[0],
-                              feature: queries[0].feature
-                                ? omit(queries[0].feature, 'description')
-                                : undefined,
-                            },
+                            query: queries[0],
                             isUpdating: isEditMode,
                           }).finally(() => setIsSubmitting(false));
                           break;
                         case 'ai':
                           onSave({
                             type: 'multiple',
-                            queries: queries.map((nextQuery) => ({
-                              ...nextQuery,
-                              feature: nextQuery.feature
-                                ? omit(nextQuery.feature, 'description')
-                                : undefined,
-                            })),
+                            queries,
                           }).finally(() => setIsSubmitting(false));
                           break;
                       }
