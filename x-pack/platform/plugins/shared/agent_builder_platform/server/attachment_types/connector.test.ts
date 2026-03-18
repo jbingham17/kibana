@@ -132,33 +132,7 @@ describe('connector attachment type', () => {
         expect((representation as { value: string }).value).toContain('Create a GitHub issue');
       });
 
-      it('includes agentFacingDescription from connector spec when available', () => {
-        getConnectorSpecMock.mockReturnValue({
-          metadata: {
-            id: '.github',
-            displayName: 'GitHub',
-            description: 'Generic GitHub connector',
-            minimumLicense: 'enterprise',
-            supportedFeatureIds: [],
-          },
-          agentFacingDescription: 'Interact with GitHub repos, issues, and pull requests',
-          actions: {},
-        });
-
-        const attachment = createAttachment(validData);
-        const formatted = connectorType.format(
-          attachment,
-          formatContext
-        ) as AgentFormattedAttachment;
-        const representation = formatted.getRepresentation!() as { value: string };
-
-        expect(representation.value).toContain(
-          'Interact with GitHub repos, issues, and pull requests'
-        );
-        expect(representation.value).not.toContain('Generic GitHub connector');
-      });
-
-      it('falls back to metadata.description when agentFacingDescription is not set', () => {
+      it('uses metadata.description from connector spec when available', () => {
         getConnectorSpecMock.mockReturnValue({
           metadata: {
             id: '.github',

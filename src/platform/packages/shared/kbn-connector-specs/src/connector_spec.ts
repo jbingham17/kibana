@@ -243,9 +243,6 @@ export interface AuthTypeDef {
 export interface ConnectorSpec {
   metadata: ConnectorMetadata;
 
-  /** Agent-facing description for this connector type. Falls back to metadata.description. */
-  agentFacingDescription?: string;
-
   auth?: {
     types: Array<string | AuthTypeDef>;
     headers?: Record<string, AxiosHeaderValue>;

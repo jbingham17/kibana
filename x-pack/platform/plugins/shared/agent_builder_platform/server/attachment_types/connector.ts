@@ -50,8 +50,7 @@ export const createConnectorAttachmentType = (): AttachmentTypeDefinition<
       return {
         getRepresentation: () => {
           const spec = getConnectorSpec(connectorType);
-          const description =
-            spec?.agentFacingDescription ?? spec?.metadata.description ?? connectorType;
+          const description = spec?.metadata.description ?? connectorType;
 
           const parts: string[] = [
             `Connector: ${connectorName} (${connectorType})`,
